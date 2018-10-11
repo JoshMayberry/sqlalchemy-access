@@ -20,8 +20,8 @@ Examples of pyodbc connection string URLs:
 
 """
 
-
-from .base import AccessExecutionContext, AccessDialect
+from pyodbc import *
+from base import AccessExecutionContext, AccessDialect
 from sqlalchemy.connectors.pyodbc import PyODBCConnector
 from sqlalchemy import types as sqltypes, util
 import decimal
