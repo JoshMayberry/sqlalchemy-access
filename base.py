@@ -271,7 +271,8 @@ class AccessDialect(sqlalchemy.engine.default.DefaultDialect):
 	name = 'access'
 
 	_pyodbc_connector = sqlalchemy.connectors.pyodbc.PyODBCConnector
-	default_paramstyle = _pyodbc_connector.default_paramstyle
+	# default_paramstyle = _pyodbc_connector.default_paramstyle
+	default_paramstyle = "qmark"
 	supports_unicode_binds = _pyodbc_connector.supports_unicode_binds
 	supports_native_decimal = _pyodbc_connector.supports_native_decimal
 	supports_unicode_statements = _pyodbc_connector.supports_unicode_statements
@@ -490,17 +491,6 @@ class AccessDialect(sqlalchemy.engine.default.DefaultDialect):
 			coltype = coltype()
 
 		return coltype
-
-	def do_execute(self, cursor, statement, params, context = None, **kwargs):
-		"""Sets up the execute statement.
-		Modified code from: https://stackoverflow.com/questions/9233912/connecting-sqlalchemy-to-msaccess/13849359#13849359
-		"""
-
-		# print("@1", cursor, statement, params, context, kwargs)
-		if params == {}:
-			params = ()
-		super().do_execute(cursor, statement, params, **kwargs)
-
 
 if __name__ == '__main__':
 	sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
