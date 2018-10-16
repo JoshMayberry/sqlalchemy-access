@@ -1,8 +1,15 @@
+import os
+import sys
+
 import re
+import importlib
+import contextlib
+
 import pyodbc
 import sqlalchemy
-import contextlib
 import sqlalchemy.connectors.pyodbc
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
 class AcNumeric(sqlalchemy.types.Numeric):
 	def get_col_spec(self):
@@ -95,18 +102,55 @@ colspecs = {
 
 #https://docs.microsoft.com/en-us/sql/odbc/reference/appendixes/sql-data-types?view=sql-server-2017
 ischema_names = {
-	"NUMERIC": sqlalchemy.types.Numeric, 
-	"FLOAT": sqlalchemy.types.Float, 
 	"INTEGER": sqlalchemy.types.Integer, 
 	"TINYINT": sqlalchemy.types.Integer, 
 	"SMALLINT": sqlalchemy.types.SmallInteger, 
-	"DATETIME": sqlalchemy.types.DateTime, 
-	"MEMO": sqlalchemy.types.Text, 
-	"TEXT": sqlalchemy.types.String, 
-	"BINARY": sqlalchemy.types.LargeBinary, 
-	"YESNO": sqlalchemy.types.Boolean, 
-	"TIMESTAMP": sqlalchemy.types.TIMESTAMP, 
 	"COUNTER": sqlalchemy.types.Integer,
+	"BIGINT": sqlalchemy.types.BigInteger, 
+
+	"FLOAT": sqlalchemy.types.Float, 
+	"NUMERIC": sqlalchemy.types.Numeric, 
+	"DECIMAL": sqlalchemy.types.Numeric, 
+	"REAL": sqlalchemy.types.Numeric, 
+	"DOUBLE": sqlalchemy.types.Numeric, 
+	"DOUBLE PRECISION": sqlalchemy.types.Numeric, 
+	
+	"DATE": sqlalchemy.types.Date, 
+	"TIME": sqlalchemy.types.Time, 
+	"DATETIME": sqlalchemy.types.DateTime, 
+	"TIMESTAMP": sqlalchemy.types.TIMESTAMP, 
+	"UTCDATETIME": sqlalchemy.types.DateTime, 
+	"UTCTIME": sqlalchemy.types.Time, 
+	"INTERVAL MONTH": sqlalchemy.types.Interval, 
+	"INTERVAL YEAR": sqlalchemy.types.Interval, 
+	"INTERVAL YEAR TO MONTH": sqlalchemy.types.Interval, 
+	"INTERVAL DAY": sqlalchemy.types.Interval, 
+	"INTERVAL HOUR": sqlalchemy.types.Interval, 
+	"INTERVAL MINUTE": sqlalchemy.types.Interval, 
+	"INTERVAL SECOND": sqlalchemy.types.Interval, 
+	"INTERVAL DAY TO HOUR": sqlalchemy.types.Interval, 
+	"INTERVAL DAY TO MINUTE": sqlalchemy.types.Interval, 
+	"INTERVAL DAY TO SECOND": sqlalchemy.types.Interval, 
+	"INTERVAL HOUR TO MINUTE": sqlalchemy.types.Interval, 
+	"INTERVAL HOUR TO SECOND": sqlalchemy.types.Interval, 
+	"INTERVAL MINUTE TO SECOND": sqlalchemy.types.Interval, 
+
+	"TEXT": sqlalchemy.types.String, 
+	"MEMO": sqlalchemy.types.Text, 
+	"CHAR": sqlalchemy.types.String, 
+	"LONGCHAR": sqlalchemy.types.String, 
+	"VARCHAR": sqlalchemy.types.String, 
+	"LONG VARCHAR": sqlalchemy.types.String, 
+	"WCHAR": sqlalchemy.types.String, 
+	"VARWCHAR": sqlalchemy.types.String, 
+	"LONGWVARCHAR": sqlalchemy.types.String, 
+
+	"YESNO": sqlalchemy.types.Boolean, 
+
+	"BIT": sqlalchemy.types.LargeBinary, 
+	"BINARY": sqlalchemy.types.LargeBinary, 
+	"VARBINARY": sqlalchemy.types.LargeBinary, 
+	"LONG VARBINARY": sqlalchemy.types.LargeBinary, 
 }
 
 class AccessExecutionContext(sqlalchemy.engine.default.DefaultExecutionContext):
@@ -224,7 +268,6 @@ class AccessIdentifierPreparer(sqlalchemy.sql.compiler.IdentifierPreparer):
 				__init__(dialect, initial_quote='[', final_quote=']')
 
 class AccessDialect(sqlalchemy.engine.default.DefaultDialect):
-	
 	name = 'access'
 
 	_pyodbc_connector = sqlalchemy.connectors.pyodbc.PyODBCConnector
@@ -288,9 +331,9 @@ class AccessDialect(sqlalchemy.engine.default.DefaultDialect):
 	def on_connect(self):
 		def connect(connection):
 			#Use: https://github.com/mkleehammer/pyodbc/wiki/Unicode
-			connection.setdecoding(pyodbc.SQL_CHAR, encoding = "utf-8")
-			connection.setdecoding(pyodbc.SQL_WCHAR, encoding = "utf-8")
-			connection.setencoding(encoding = "utf-8")
+			connection.setdecoding(pyodbc.SQL_CHAR, encoding = self.encoding)
+			connection.setdecoding(pyodbc.SQL_WCHAR, encoding = self.encoding)
+			connection.setencoding(encoding = self.encoding)
 		return connect
 
 	def last_inserted_ids(self):
@@ -299,13 +342,34 @@ class AccessDialect(sqlalchemy.engine.default.DefaultDialect):
 	def has_table(self, base_connection, tablename, schema = None):
 		return bool(tablename in self.get_table_names(base_connection, schema = schema))
 
+	@contextlib.contextmanager
+	def makeConnection(self, base_connection):
+
+		if (not isinstance(base_connection, sqlalchemy.engine.base.Connection)):
+			connection = base_connection.connect()
+			close = True
+		else:
+			connection = base_connection
+			close = False
+		
+		transaction = connection.begin()
+		try:
+			yield connection.connection
+			transaction.commit()
+		except:
+			transaction.rollback()
+			raise
+		finally:
+			if (close):
+				connection.close()
+
 	@sqlalchemy.engine.reflection.cache
 	def get_table_names(self, base_connection, schema = None, **kwargs):
 		"""Returns a list of table names."""
 
-		cursor = base_connection.connection.cursor()
-
-		return tuple(table_info.table_name for tableType in ("TABLE", "ALIAS", "SYNONYM") for table_info in cursor.tables(tableType = tableType))
+		with self.makeConnection(base_connection) as connection:
+			cursor = connection.cursor()
+			return tuple(table_info.table_name for tableType in ("TABLE", "ALIAS", "SYNONYM") for table_info in cursor.tables(tableType = tableType))
 
 	@sqlalchemy.engine.reflection.cache
 	def get_pk_constraint(self, base_connection, relation, schema = None, **kwargs):
@@ -313,9 +377,9 @@ class AccessDialect(sqlalchemy.engine.default.DefaultDialect):
 		Modified code from sqlalchemy.dialects.sqlite.base.py
 		"""
 
-		constraint_name = None
 		keyList = tuple(column["name"] for column in self.get_columns(base_connection, relation, schema, **kwargs) if column['primary_key'])
-		return {'constrained_columns': keyList, 'name': constraint_name}
+		assert keyList
+		return {'constrained_columns': keyList, 'name': "PrimaryKey"}
 
 	@sqlalchemy.engine.reflection.cache
 	def get_foreign_keys(self, base_connection, relation, schema = None, **kwargs):
@@ -329,22 +393,23 @@ class AccessDialect(sqlalchemy.engine.default.DefaultDialect):
 		Modified code from sqlalchemy.dialects.sqlite.base.py
 		"""
 
-		index_info = {}
-		cursor = base_connection.connection.cursor()
-		for item in cursor.statistics(relation):
-			name = item[5]
-			if (name is None):
-				continue
+		with self.makeConnection(base_connection) as connection:
+			index_info = {}
+			cursor = connection.cursor()
+			for item in cursor.statistics(relation):
+				name = item[5]
+				if (name is None):
+					continue
 
-			if (name in index_info):
-				index_info[name]["column_names"].append(item[8])
-				continue
-				
-			index_info[name] = {
-				"name": name,
-				"column_names": [item[8]],
-				"unique": not item[3],
-			}
+				if (name in index_info):
+					index_info[name]["column_names"].append(item[8])
+					continue
+					
+				index_info[name] = {
+					"name": name,
+					"column_names": [item[8]],
+					"unique": not item[3],
+				}
 
 		return tuple(index_info.values())
 
@@ -354,28 +419,29 @@ class AccessDialect(sqlalchemy.engine.default.DefaultDialect):
 		Modified code from sqlalchemy.dialects.sqlite.base.py
 		"""
 
-		column_info = {}
-		cursor = base_connection.connection.cursor()
-		for item in cursor.columns(table = relation):
-			name = item[3]
-			column_info[name] = {
-				"name": name,
-				"type": self._resolve_type_affinity(item[5].upper()),
-				"nullable": item[12],
-				"primary_key": False,
-			}
+		with self.makeConnection(base_connection) as connection:
+			column_info = {}
+			cursor = connection.cursor()
+			for item in cursor.columns(table = relation):
+				name = item[3]
+				column_info[name] = {
+					"name": name,
+					"type": self._resolve_type_affinity(item[5].upper()),
+					"nullable": item[12],
+					"primary_key": False,
+				}
 
-			default = item[12]
-			if (default is None):
-				column_info[name]["default"] = None
-			else:
-				column_info[name]["default"] = sqlalchemy.engine.util.text_type(default)
+				default = item[12]
+				if (default is None):
+					column_info[name]["default"] = None
+				else:
+					column_info[name]["default"] = sqlalchemy.engine.util.text_type(default)
 
-		for item in cursor.statistics(relation):
-			name = item[8]
-			if (name is None):
-				continue
-			column_info[name]["primary_key"] = item[5] is "PrimaryKey"
+			for item in cursor.statistics(relation):
+				name = item[8]
+				if ((name is None) or (column_info[name]["primary_key"])):
+					continue
+				column_info[name]["primary_key"] = item[5] == "PrimaryKey"
 
 		return tuple(column_info.values())
 
@@ -408,17 +474,7 @@ class AccessDialect(sqlalchemy.engine.default.DefaultDialect):
 			coltype = self.ischema_names[coltype]
 		else:
 			print("@_resolve_type_affinity", type_)
-			gjhhgjjhghg
-		# elif 'INT' in coltype:
-		# 	coltype = sqltypes.INTEGER
-		# elif 'CHAR' in coltype or 'CLOB' in coltype or 'TEXT' in coltype:
-		# 	coltype = sqltypes.TEXT
-		# elif 'BLOB' in coltype or not coltype:
-		# 	coltype = sqltypes.NullType
-		# elif 'REAL' in coltype or 'FLOA' in coltype or 'DOUB' in coltype:
-		# 	coltype = sqltypes.REAL
-		# else:
-		# 	coltype = sqltypes.NUMERIC
+			assert False
 
 		if args is not None:
 			args = re.findall(r'(\d+)', args)
@@ -447,20 +503,18 @@ class AccessDialect(sqlalchemy.engine.default.DefaultDialect):
 
 
 if __name__ == '__main__':
-	import os
-	import sys
-
 	sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-	
+
 	def test():
 		moduleLocation = "forks.sqlalchemy.dialects.access.base"
 
 		sqlalchemy.dialects.registry.register("access.fixed", "access.base", "AccessDialect")
-		engine = sqlalchemy.create_engine("access+fixed:///./test.accdb")
+		# engine = sqlalchemy.create_engine("access+fixed:///./test.accdb")
+		engine = sqlalchemy.create_engine("access+fixed:///R:/Material Log - Database/Users/Josh Mayberry/User Database.mdb")
 		connection = engine.connect()
 
 		metadata = sqlalchemy.MetaData(engine, reflect = True)
-		print(metadata)
+		print(tuple(metadata.tables.keys()))
 
 	def raw():
 		import pyodbc
@@ -471,7 +525,6 @@ if __name__ == '__main__':
 		connection.setdecoding(pyodbc.SQL_WCHAR, encoding = "utf-8")
 		connection.setencoding(encoding = "utf-8")
 
-		print(connection)
 		cursor = connection.cursor()
 		tableNames = [x[2] for x in cursor.tables().fetchall() if x[3] == 'TABLE']
 		print(tableNames)
